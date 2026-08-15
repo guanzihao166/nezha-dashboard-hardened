@@ -18,13 +18,6 @@ func CloseReceiptGate() {
 	rpcService.CloseReceiptGate()
 }
 
-// SetMCPKillSwitchObserver re-exports the service/rpc hook so cmd/dashboard
-// can wire singleton.Conf.EnableMCP without importing the inner rpc package
-// (cmd/dashboard already imports cmd/dashboard/rpc for ServeRPC).
-func SetMCPKillSwitchObserver(fn func() bool) {
-	rpcService.SetMCPKillSwitchObserver(fn)
-}
-
 func ServeRPC() *grpc.Server {
 	// Streaming RPCs (RequestTask, IOStream) need the same real-IP + WAF
 	// gate as unary calls; without the stream interceptors authHandler.check

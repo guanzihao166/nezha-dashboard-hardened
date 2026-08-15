@@ -160,9 +160,6 @@ func main() {
 
 	singleton.CleanMonitorHistory()
 	rpc.DispatchKeepalive()
-	rpc.SetMCPKillSwitchObserver(func() bool {
-		return singleton.Conf == nil || !singleton.Conf.MCPEnabled()
-	})
 	go rpc.DispatchTask(serviceSentinelDispatchBus)
 	go singleton.AlertSentinelStart()
 
