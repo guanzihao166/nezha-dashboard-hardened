@@ -30,22 +30,42 @@ type IPInfo struct {
 	ContinentName string `maxminddb:"continent_name"`
 }
 
+// Lookup resolves an IP to a country code. The embedded database may be either
+// the upstream IPInfo country database (flat fields) or a MaxMind GeoLite2
+// country database (nested country/continent records), so the record is
+// decoded dynamically instead of pinning one schema.
 func Lookup(ip net.IP) (string, error) {
 	db, err := dbOnce()
 	if err != nil {
 		return "", err
 	}
 
-	var record IPInfo
-	err = db.Lookup(ip, &record)
+	var raw map[string]any
+	err = db.Lookup(ip, &raw)
 	if err != nil {
 		return "", err
 	}
 
-	if record.Country != "" {
-		return strings.ToLower(record.Country), nil
-	} else if record.Continent != "" {
-		return strings.ToLower(record.Continent), nil
+	switch v := raw["country"].(type) {
+	case string:
+		if v != "" {
+			return strings.ToLower(v), nil
+		}
+	case map[string]any:
+		if code, ok := v["iso_code"].(string); ok && code != "" {
+			return strings.ToLower(code), nil
+		}
+	}
+
+	switch v := raw["continent"].(type) {
+	case string:
+		if v != "" {
+			return strings.ToLower(v), nil
+		}
+	case map[string]any:
+		if code, ok := v["code"].(string); ok && code != "" {
+			return strings.ToLower(code), nil
+		}
 	}
 
 	return "", errors.New("IP not found")
