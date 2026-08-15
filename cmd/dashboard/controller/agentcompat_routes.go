@@ -13,12 +13,9 @@ import (
 
 func registerAgentcompatRoutes(router *gin.Engine) {
 	patAuth := requiredAgentcompatPAT(apiTokenAuthMiddleware())
-	router.POST("/agentcompat/mcp-rate-limit-probe", patAuth, commonHandler(agentcompatMCPRateLimitProbeRoute))
 	router.GET("/agentcompat/io-stream-state", patAuth, commonHandler(agentcompatIOStreamSnapshot))
 	router.POST("/agentcompat/io-stream-state", patAuth, commonHandler(agentcompatIOStreamWait))
 	router.POST("/agentcompat/io-stream-quota-probe", patAuth, commonHandler(agentcompatIOStreamQuotaProbeRoute))
-	registerAgentcompatCapabilityRoutes(router, patAuth)
-	registerAgentcompatSQLiteHoldRoutes(router, patAuth)
 }
 
 type agentcompatIOStreamQuotaProbeResponse struct {
