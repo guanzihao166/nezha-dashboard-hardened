@@ -12,7 +12,6 @@ import (
 	"os"
 	"runtime/debug"
 	"strings"
-	"time"
 	_ "time/tzdata"
 
 	"github.com/gin-gonic/gin"
@@ -169,8 +168,10 @@ func main() {
 
 	muxHandler := newHTTPandGRPCMux(httpHandler, grpcHandler)
 	muxServerHTTP := &http.Server{
-		Handler:           muxHandler,
-		ReadHeaderTimeout: time.Second * 5,
+		Handler: muxHandler,
+		// Keep ReadHeaderTimeout disabled: with unencrypted HTTP/2 (h2c) the
+		// short header deadline can leak onto long-lived gRPC streams and make
+		// every Agent reconnect after 5 seconds.
 	}
 	muxServerHTTP.Protocols = new(http.Protocols)
 	muxServerHTTP.Protocols.SetHTTP1(true)
@@ -179,9 +180,8 @@ func main() {
 	var muxServerHTTPS *http.Server
 	if singleton.Conf.HTTPS.ListenPort != 0 {
 		muxServerHTTPS = &http.Server{
-			Addr:              fmt.Sprintf("%s:%d", singleton.Conf.ListenHost, singleton.Conf.HTTPS.ListenPort),
-			Handler:           muxHandler,
-			ReadHeaderTimeout: time.Second * 5,
+			Addr:     fmt.Sprintf("%s:%d", singleton.Conf.ListenHost, singleton.Conf.HTTPS.ListenPort),
+			Handler:  muxHandler,
 			TLSConfig: &tls.Config{
 				InsecureSkipVerify: singleton.Conf.HTTPS.InsecureTLS,
 			},
