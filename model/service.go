@@ -17,13 +17,17 @@ const (
 	TaskTypeHTTPGet
 	TaskTypeICMPPing
 	TaskTypeTCPPing
+	// Reserved: legacy arbitrary command execution is disabled.
 	TaskTypeCommand
+	// Reserved: legacy terminal sessions are disabled.
 	TaskTypeTerminal
 	TaskTypeUpgrade
 	TaskTypeKeepalive
+	// Reserved: legacy gRPC terminal sessions are disabled.
 	TaskTypeTerminalGRPC
 	TaskTypeNAT
 	TaskTypeReportHostInfoDeprecated
+	// Reserved: legacy file manager sessions are disabled.
 	TaskTypeFM
 	TaskTypeReportConfig
 	TaskTypeApplyConfig
@@ -31,11 +35,14 @@ const (
 	// Pre-transfer agents do not recognise this type — dashboard MUST gate
 	// transfers on agent capability before pushing.
 	TaskTypeServerTransferApply
+	// Reserved: MCP remote command execution is disabled.
 	TaskTypeExec
+	// Reserved: MCP filesystem operations are disabled.
 	TaskTypeFsList
 	TaskTypeFsRead
 	TaskTypeFsWrite
 	TaskTypeFsDelete
+	// Reserved: MCP file transfer is disabled.
 	TaskTypeFsTransfer
 )
 
@@ -63,163 +70,13 @@ func ValidateServiceMonitorType(t uint64) error {
 	return nil
 }
 
-// IsMCPRPCResult 判定一个 TaskResult.Type 是否属于 MCP 走 RequestTask 通道的
-// 一次性 RPC 类型。dashboard 的 RequestTask 接收循环用它把这些回包路由到
-// Server.inflightRPC 等待方，而不是走 ServiceSentinel。
-//
-// TaskTypeFsTransfer 走 IOStream 而不是 RequestTask 回包，故不在此列；agent
-// 不会对它发 TaskResult。
-func IsMCPRPCResult(t uint64) bool {
-	switch t {
-	case TaskTypeExec, TaskTypeFsList, TaskTypeFsRead, TaskTypeFsWrite, TaskTypeFsDelete:
-		return true
-	}
-	return false
-}
-
-// ExecRequest 是 server.exec 通过 Task.Data 下发到 agent 的载荷（JSON）。
-type ExecRequest struct {
-	Cmd            string            `json:"cmd"`
-	Args           []string          `json:"args,omitempty"`
-	Cwd            string            `json:"cwd,omitempty"`
-	Env            map[string]string `json:"env,omitempty"`
-	TimeoutSeconds uint32            `json:"timeout_seconds,omitempty"`
-	Stdin          string            `json:"stdin,omitempty"`
-	MaxOutputBytes uint32            `json:"max_output_bytes,omitempty"`
-}
-
-// ExecResult 是 agent 通过 TaskResult.Data 回传的执行结果（JSON）。
-type ExecResult struct {
-	ExitCode        int    `json:"exit_code"`
-	Stdout          string `json:"stdout"`
-	Stderr          string `json:"stderr"`
-	DurationMs      int64  `json:"duration_ms"`
-	StdoutTruncated bool   `json:"stdout_truncated,omitempty"`
-	StderrTruncated bool   `json:"stderr_truncated,omitempty"`
-	TimedOut        bool   `json:"timed_out,omitempty"`
-	Error           string `json:"error,omitempty"`
-}
-
-// FsListRequest fs.list 下发载荷。
-type FsListRequest struct {
-	Path       string `json:"path"`
-	ShowHidden bool   `json:"show_hidden,omitempty"`
-}
-
-// FsEntry 单条目录元数据。
-type FsEntry struct {
-	Name        string `json:"name"`
-	Type        string `json:"type"`
-	Size        int64  `json:"size"`
-	Mode        string `json:"mode"`
-	ModTimeUnix int64  `json:"mtime"`
-	IsSymlink   bool   `json:"is_symlink,omitempty"`
-	LinkTarget  string `json:"link_target,omitempty"`
-}
-
-// FsListResult fs.list 回包。
-type FsListResult struct {
-	Entries   []FsEntry `json:"entries"`
-	Truncated bool      `json:"truncated,omitempty"`
-	Total     int       `json:"total,omitempty"`
-	Error     string    `json:"error,omitempty"`
-}
-
-// FsReadRequest fs.read 下发载荷。Offset/Length 单位为字节；encoding 控制返回。
-type FsReadRequest struct {
-	Path     string `json:"path"`
-	Offset   int64  `json:"offset,omitempty"`
-	Length   int64  `json:"length,omitempty"`
-	Encoding string `json:"encoding,omitempty"`
-}
-
-// FsReadResult fs.read 回包。Content 按 encoding 编码（utf8 原文 / base64 二进制安全）。
-type FsReadResult struct {
-	Content   string `json:"content"`
-	Encoding  string `json:"encoding"`
-	Size      int64  `json:"size"`
-	SHA256    string `json:"sha256,omitempty"`
-	Truncated bool   `json:"truncated,omitempty"`
-	Error     string `json:"error,omitempty"`
-}
-
-// FsWriteRequest fs.write 下发载荷。Mode 用 unix 数字字符串如 "0644"。
-type FsWriteRequest struct {
-	Path          string `json:"path"`
-	Content       string `json:"content"`
-	Encoding      string `json:"encoding,omitempty"`
-	Mode          string `json:"mode,omitempty"`
-	IfMatchSHA256 string `json:"if_match_sha256,omitempty"`
-	CreateDirs    bool   `json:"create_dirs,omitempty"`
-}
-
-// FsWriteResult fs.write 回包。
-type FsWriteResult struct {
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
-	Error  string `json:"error,omitempty"`
-}
-
-// FsDeleteRequest fs.delete 下发载荷。
-type FsDeleteRequest struct {
-	Path      string `json:"path"`
-	Recursive bool   `json:"recursive,omitempty"`
-}
-
-// FsDeleteResult fs.delete 回包。
-type FsDeleteResult struct {
-	DeletedCount int    `json:"deleted_count"`
-	Error        string `json:"error,omitempty"`
-}
-
-const (
-	// MCPFsTransferOpUpload / Download 区分 IOStream 内的数据流向。
-	MCPFsTransferOpUpload   = "upload"
-	MCPFsTransferOpDownload = "download"
-
-	// MCPFsTransferMaxSize 单次传输硬上限，dashboard 和 agent 双方都拒绝
-	// 超出大小的请求。设为 100MiB 与产品语义"~100MB 大文件"对齐。
-	MCPFsTransferMaxSize = 100 * 1024 * 1024
-)
-
-// FsTransferRequest 通过 Task.Data 下发到 agent；agent 据此打开本地
-// IOStream，按 op 完成上/下行。streamId 用于 agent IOStream 引导帧。
-type FsTransferRequest struct {
-	StreamID       string `json:"stream_id"`
-	Op             string `json:"op"`
-	Path           string `json:"path"`
-	Size           int64  `json:"size,omitempty"`
-	Mode           string `json:"mode,omitempty"`
-	CreateDirs     bool   `json:"create_dirs,omitempty"`
-	IfMatchSHA256  string `json:"if_match_sha256,omitempty"`
-	ExpectedSHA256 string `json:"expected_sha256,omitempty"`
-}
-
-// 双向 IOStream 控制帧 magic（每帧第一帧的前 4 字节）。数据帧不带 magic。
-//
-// 这套 magic 与 FM 协议（NZTD/NZFN/NERR/NZUP）共存而不冲突：NZTD 在 FM 表示
-// "file header"，在 transfer 表示"download header"，但两条协议通过不同的
-// task type（TaskTypeFM vs TaskTypeFsTransfer）分流，不会复用同一个 agent
-// goroutine，所以 magic 撞名只是字面巧合，不会破坏解析。
-var (
-	MCPFsXferMagicUploadHdr   = []byte{0x4E, 0x5A, 0x54, 0x55} // NZTU
-	MCPFsXferMagicDownloadHdr = []byte{0x4E, 0x5A, 0x54, 0x44} // NZTD
-	MCPFsXferMagicOK          = []byte{0x4E, 0x5A, 0x54, 0x4F} // NZTO
-	MCPFsXferMagicErr         = []byte{0x4E, 0x5A, 0x54, 0x45} // NZTE
-	MCPFsXferMagicChunk       = []byte{0x4E, 0x5A, 0x54, 0x43} // NZTC: download data chunk
-)
-
-type TerminalTask struct {
-	StreamID string
-}
+// IsMCPRPCResult is retained for RPC receive-loop compatibility. The hardened
+// Dashboard has no MCP task types that may be dispatched to an Agent.
+func IsMCPRPCResult(uint64) bool { return false }
 
 type TaskNAT struct {
 	StreamID string
 	Host     string
-}
-
-type TaskFM struct {
-	StreamID string
 }
 
 const (
