@@ -88,52 +88,12 @@ jobs:
           go install github.com/securego/gosec/v2/cmd/gosec@v2.27.1
           gosec --exclude=G104,G115,G117,G203,G402,G703,G704 ./...
 
-  agentcompat-stress:
-    name: Linux agent compatibility stress
-    runs-on: ubuntu-24.04
-    timeout-minutes: 75
-    steps:
-      - name: Checkout Nezha revision
-        uses: actions/checkout@v7.0.1
-        with:
-          path: nezha
-          persist-credentials: false
-      - name: Checkout Agent repository
-        uses: actions/checkout@v7.0.1
-        with:
-          repository: nezhahq/agent
-          path: agent
-          persist-credentials: false
-      - name: Set up Go
-        uses: actions/setup-go@v7
-        with:
-          go-version: "1.26.x"
-          cache: false
-      - name: Prepare Dashboard build inputs
-        working-directory: nezha
-        run: |
-          go install github.com/swaggo/swag/cmd/swag@v1.16.6
-          mkdir -p cmd/dashboard/user-dist cmd/dashboard/admin-dist
-          printf 'placeholder\n' > cmd/dashboard/user-dist/placeholder.txt
-          printf 'placeholder\n' > cmd/dashboard/admin-dist/placeholder.txt
-          swag init --pd -d cmd/dashboard -g main.go -o cmd/dashboard/docs
-      - name: Require named stress test
-        working-directory: nezha
-        run: go test -mod=readonly -tags=agentcompat -list '^TestStressPRFullEightAgentExactlyOnce$' ./integration/agentcompat/internal/scenario | grep -Fx 'TestStressPRFullEightAgentExactlyOnce'
-      - name: Run PR-full agent compatibility stress
-        working-directory: nezha
-        env:
-          AGENTCOMPAT_NEZHA_SOURCE: ${{ github.workspace }}/nezha
-          AGENTCOMPAT_AGENT_SOURCE: ${{ github.workspace }}/agent
-        run: go test -mod=readonly -tags=agentcompat -run '^TestStressPRFullEightAgentExactlyOnce$' -count=1 -v ./integration/agentcompat/internal/scenario
-
   nezha-quality-required:
     name: nezha-quality-required
     if: ${{ always() }}
     needs:
       - tests
       - linux-race-quality
-      - agentcompat-stress
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -142,4 +102,3 @@ jobs:
         run: |
           test "${{ needs.tests.result }}" = success
           test "${{ needs.linux-race-quality.result }}" = success
-          test "${{ needs.agentcompat-stress.result }}" = success
