@@ -70,10 +70,6 @@ func ValidateServiceMonitorType(t uint64) error {
 	return nil
 }
 
-// IsMCPRPCResult is retained for RPC receive-loop compatibility. The hardened
-// Dashboard has no MCP task types that may be dispatched to an Agent.
-func IsMCPRPCResult(uint64) bool { return false }
-
 type TaskNAT struct {
 	StreamID string
 	Host     string

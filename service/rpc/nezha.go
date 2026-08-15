@@ -178,10 +178,6 @@ func (s *NezhaHandler) RequestTask(stream pb.NezhaService_RequestTaskServer) err
 				log.Printf("NEZHA>> ServerTransfer MarkFailed(%d) failed: %v", result.GetId(), err)
 			}
 		default:
-			if model.IsMCPRPCResult(result.GetType()) {
-				deliverMCPResultFromReporter(result, clientID)
-				continue
-			}
 			if model.IsServiceSentinelNeeded(result.GetType()) {
 				singleton.ServiceSentinelShared.Dispatch(singleton.ReportData{
 					Data:     result,
