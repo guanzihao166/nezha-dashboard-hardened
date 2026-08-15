@@ -1,0 +1,227 @@
+package model
+
+import (
+	"slices"
+
+	"github.com/gin-gonic/gin"
+	"github.com/goccy/go-json"
+	"gorm.io/gorm"
+)
+
+const (
+	ModeAlwaysTrigger  = 0
+	ModeOnetimeTrigger = 1
+)
+
+type AlertRule struct {
+	Common
+	Name                   string   `json:"name"`
+	RulesRaw               string   `json:"-"`
+	Enable                 *bool    `json:"enable,omitempty"`
+	TriggerMode            uint8    `gorm:"default:0" json:"trigger_mode"` // 触发模式: 0-始终触发(默认) 1-单次触发
+	NotificationGroupID    uint64   `json:"notification_group_id"`         // 该报警规则所在的通知组
+	FailTriggerTasksRaw    string   `gorm:"default:'[]'" json:"-"`
+	RecoverTriggerTasksRaw string   `gorm:"default:'[]'" json:"-"`
+	Rules                  []*Rule  `gorm:"-" json:"rules"`
+	FailTriggerTasks       []uint64 `gorm:"-" json:"fail_trigger_tasks"`    // 失败时执行的触发任务id
+	RecoverTriggerTasks    []uint64 `gorm:"-" json:"recover_trigger_tasks"` // 恢复时执行的触发任务id
+}
+
+func (r *AlertRule) BeforeSave(tx *gorm.DB) error {
+	if data, err := json.Marshal(r.Rules); err != nil {
+		return err
+	} else {
+		r.RulesRaw = string(data)
+	}
+	if data, err := json.Marshal(r.FailTriggerTasks); err != nil {
+		return err
+	} else {
+		r.FailTriggerTasksRaw = string(data)
+	}
+	if data, err := json.Marshal(r.RecoverTriggerTasks); err != nil {
+		return err
+	} else {
+		r.RecoverTriggerTasksRaw = string(data)
+	}
+	return nil
+}
+
+func (r *AlertRule) AfterFind(tx *gorm.DB) error {
+	var err error
+	if err = json.Unmarshal([]byte(r.RulesRaw), &r.Rules); err != nil {
+		return err
+	}
+	if err = json.Unmarshal([]byte(r.FailTriggerTasksRaw), &r.FailTriggerTasks); err != nil {
+		return err
+	}
+	if err = json.Unmarshal([]byte(r.RecoverTriggerTasksRaw), &r.RecoverTriggerTasks); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *AlertRule) Enabled() bool {
+	return r.Enable != nil && *r.Enable
+}
+
+// HasPermission extends the default owner/admin check with PAT
+// server_ids whitelist enforcement. AlertRule.Snapshot fans out across
+// every owner-visible server filtered only by Rule.Ignore semantics
+// (RuleCoverAll: deny-list; RuleCoverIgnoreAll: allow-list). A
+// server-limited PAT must therefore satisfy the same cover-fanout rule
+// the cron / service paths use — otherwise it can create or update a
+// rule that monitors servers outside its whitelist (admin owner: any
+// server in the system).
+//
+// Unknown Rule.Cover is fail-closed: Snapshot's switch defaults to
+// "monitor everything", so persisting it would defeat the PAT cover
+// guard. createAlertRule / updateAlertRule should also reject unknown
+// covers at write time; this method is the runtime safety net.
+func (r *AlertRule) HasPermission(ctx *gin.Context) bool {
+	if !r.Common.HasPermission(ctx) {
+		return false
+	}
+	v, ok := ctx.Get(CtxKeyAPIToken)
+	if !ok {
+		return true
+	}
+	tok, _ := v.(APITokenAccessor)
+	if tok == nil {
+		return true
+	}
+	if wl, ok := tok.(APITokenWhitelistView); ok && len(wl.ServerIDs()) == 0 {
+		return true
+	}
+	for _, rule := range r.Rules {
+		if rule == nil {
+			continue
+		}
+		switch rule.Cover {
+		case RuleCoverAll:
+			denyIDs := make([]uint64, 0, len(rule.Ignore))
+			for id, ignored := range rule.Ignore {
+				if ignored {
+					denyIDs = append(denyIDs, id)
+				}
+			}
+			if !DenyListSafeForLimitedPAT(tok, r.GetUserID(), denyIDs) {
+				return false
+			}
+		case RuleCoverIgnoreAll:
+			for id, monitored := range rule.Ignore {
+				if monitored && !tok.CanAccessServer(id) {
+					return false
+				}
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Snapshot 对传入的Server进行该报警规则下所有type的检查 返回每项检查结果
+func (r *AlertRule) Snapshot(cycleTransferStats *CycleTransferStats, server *Server, db *gorm.DB) []bool {
+	point := make([]bool, len(r.Rules))
+
+	for i, rule := range r.Rules {
+		point[i] = rule.Snapshot(cycleTransferStats, server, db)
+	}
+	return point
+}
+
+// Check 传入包含当前报警规则下所有type检查结果 返回报警持续时间与是否通过报警检查(通过则返回true)
+func (r *AlertRule) Check(points [][]bool) (int, bool) {
+	var hasPassedRule bool
+	durations := make([]int, len(r.Rules))
+
+	for ruleIndex, rule := range r.Rules {
+		duration := int(rule.Duration)
+		if rule.IsTransferDurationRule() {
+			// 循环区间流量报警
+			if durations[ruleIndex] < 1 {
+				durations[ruleIndex] = 1
+			}
+			if hasPassedRule {
+				continue
+			}
+			// 只要最后一次检查超出了规则范围 就认为检查未通过
+			if len(points) > 0 && points[len(points)-1][ruleIndex] {
+				hasPassedRule = true
+			}
+		} else if rule.IsOfflineRule() {
+			// 离线报警，检查直到最后一次在线的离线采样点是否大于 duration
+			if hasPassedRule = boundCheck(len(points), duration, hasPassedRule); hasPassedRule {
+				continue
+			}
+			var fail int
+			for _, point := range slices.Backward(points[len(points)-duration:]) {
+				fail++
+				if point[ruleIndex] {
+					hasPassedRule = true
+					break
+				}
+			}
+			durations[ruleIndex] = fail
+			continue
+		} else {
+			// 常规报警
+			// duration<=0 是无意义的规则（持续 0 秒）：直接跳过该规则，
+			// 既不污染 hasPassedRule（否则会连带跳过同一 alert 里其它有效
+			// 规则），也避免下方 fail*100/total 在 total=0 时整数除零 panic
+			// —— checkStatus 无 recover，一次 panic 会拖垮整个告警 goroutine。
+			if duration <= 0 {
+				continue
+			}
+			if hasPassedRule = boundCheck(len(points), duration, hasPassedRule); hasPassedRule {
+				continue
+			}
+			if duration > durations[ruleIndex] {
+				durations[ruleIndex] = duration
+			}
+			total, fail := duration, 0
+			for timeTick := len(points) - duration; timeTick < len(points); timeTick++ {
+				if !points[timeTick][ruleIndex] {
+					fail++
+				}
+			}
+			// 当70%以上的采样点未通过规则判断时 才认为当前检查未通过
+			if fail*100/total <= 70 {
+				hasPassedRule = true
+			}
+		}
+	}
+
+	// 仅当所有检查均未通过时 才触发告警
+	return slices.Max(durations), hasPassedRule
+}
+
+// RetentionWindow 返回保留历史采样所需的长度（各规则窗口的最大值），只依赖
+// 规则定义而非 Check 的判定结果——否则窗口未填满时 Check 返回的 max=0 会被
+// 误判为"无需历史"而清空采样，使规则永远攒不够样本。
+// 各规则类型回看的采样数必须与 Check 中实际读取的窗口一致：
+//   - 周期流量规则：Check 只读最后 1 个采样点 → 需要 1
+//   - 离线规则、常规规则：Check 读取 points[len-Duration:] → 需要 Duration
+func (r *AlertRule) RetentionWindow() int {
+	window := 0
+	for _, rule := range r.Rules {
+		var need int
+		if rule.IsTransferDurationRule() {
+			need = 1
+		} else if d := int(rule.Duration); d > 0 {
+			need = d
+		}
+		if need > window {
+			window = need
+		}
+	}
+	return window
+}
+
+func boundCheck(length, duration int, passed bool) bool {
+	if passed {
+		return true
+	}
+	// 如果采样点数量不足 则认为检查通过
+	return length < duration
+}
