@@ -3,7 +3,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends build-essential
 RUN wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq && chmod +x /usr/local/bin/yq
 WORKDIR /src
 COPY . .
-RUN chmod +x script/fetch-frontends.sh && script/fetch-frontends.sh
+RUN chmod +x script/fetch-frontends.sh && script/fetch-frontends.sh \
+    && rm -rf cmd/dashboard/admin-dist \
+    && mv hardened-admin-dist cmd/dashboard/admin-dist
 RUN go run github.com/swaggo/swag/cmd/swag@v1.16.6 init --pd -d cmd/dashboard -g main.go -o cmd/dashboard/docs
 # The target instance has limited RAM; keep Go's package compiler single-threaded.
 RUN GOMAXPROCS=1 CGO_ENABLED=1 go build -p 1 -trimpath -ldflags='-s -w' -o /out/dashboard ./cmd/dashboard
