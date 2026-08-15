@@ -34,4 +34,6 @@ jobs:
           file: Dockerfile.hardened
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/guanzihao166/nezha-dashboard-hardened:latest
+          tags: |
+            ghcr.io/guanzihao166/nezha-dashboard-hardened:latest
+            ghcr.io/guanzihao166/nezha-dashboard-hardened:sha-${{ github.sha }}
