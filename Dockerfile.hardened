@@ -1,0 +1,16 @@
+FROM golang:1.26-bookworm AS build
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential ca-certificates curl unzip wget && rm -rf /var/lib/apt/lists/*
+RUN wget -q https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64 -O /usr/local/bin/yq && chmod +x /usr/local/bin/yq
+WORKDIR /src
+COPY . .
+RUN chmod +x script/fetch-frontends.sh && script/fetch-frontends.sh
+RUN go run github.com/swaggo/swag/cmd/swag@v1.16.6 init --pd -d cmd/dashboard -g main.go -o cmd/dashboard/docs
+RUN CGO_ENABLED=1 go build -trimpath -ldflags='-s -w' -o /out/dashboard ./cmd/dashboard
+
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata && rm -rf /var/lib/apt/lists/*
+WORKDIR /dashboard
+COPY --from=build /out/dashboard /dashboard/app
+VOLUME ["/dashboard/data"]
+EXPOSE 8008
+ENTRYPOINT ["/dashboard/app"]
